@@ -7,11 +7,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/wedelivery123/Wedel-ganrate-qrcode/genqr"
 	"gopkg.in/ini.v1"
+	"image/png"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 )
 
 var (
@@ -26,20 +26,26 @@ type contactData struct {
 	Email     string `json:"email"`
 }
 
+type configData struct {
+	Port     string
+	LogoPath string
+}
+
 func main() {
 
 	flag.Parse()
 
 	configPath := filepath.Join("utils/config", *configFileName+".ini")
 
-	port, err := parseConfig(configPath)
+	config, err := parseConfig(configPath)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	log.Println(port)
-	http.HandleFunc("/qr-codes", qrCodesHandler)
-	addr := fmt.Sprintf(":%s", port)
+	log.Println(config.Port)
+	log.Println(config.LogoPath)
+	http.HandleFunc("/qr-codes", qrCodesHandler(config.LogoPath))
+	addr := fmt.Sprintf(":%s", config.Port)
 
 	logrus.Infof("Server started on %s...", addr)
 
@@ -50,41 +56,52 @@ func main() {
 
 }
 
-func parseConfig(filePath string) (string, error) {
+func parseConfig(filePath string) (*configData, error) {
+	config := &configData{}
 	// Load Ini file
 	cfg, err := ini.Load(filePath)
 	if err != nil {
-		return "", fmt.Errorf("не удалось загрузить файл: %v", err)
+		return nil, fmt.Errorf("не удалось загрузить файл: %v", err)
 	}
 	section := cfg.Section("")
-	port := section.Key("port").String()
+	config.Port = section.Key("port").String()
+	config.LogoPath = section.Key("pathToLogo").String()
 
-	return port, nil
+	return config, nil
 }
 
-func qrCodesHandler(w http.ResponseWriter, r *http.Request) {
-	var contact contactData
+func qrCodesHandler(logo string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var contact contactData
 
-	err := json.NewDecoder(r.Body).Decode(&contact)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(err.Error()))
-		return
-	}
-	vCard := fmt.Sprintf("BEGIN:VCARD\nVERSION:3.0\nFN:%s %s\nTEL:%s\nEMAIL:%s\nEND:VCARD",
-		contact.FirstName, contact.LastName, contact.Phone, contact.Email)
-	png, err := genqr.GenerateQrCode(vCard)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(err.Error()))
-		return
-	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Content-Length", strconv.Itoa(len(png)))
+		err := json.NewDecoder(r.Body).Decode(&contact)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		vCard := fmt.Sprintf("BEGIN:VCARD\nVERSION:3.0\nFN:%s %s\nTEL:%s\nEMAIL:%s\nEND:VCARD",
+			contact.FirstName, contact.LastName, contact.Phone, contact.Email)
 
-	_, err = w.Write(png)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		logoFile, err := os.Open(logo + "Logo.svg")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Failed to open logo file: " + err.Error()))
+			return
+		}
+		defer logoFile.Close()
+		pngQr, err := genqr.GenerateQrCode(vCard, logoFile)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+
+		err = png.Encode(w, pngQr)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 	}
 }
